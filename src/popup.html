@@ -9,11 +9,12 @@
   <body>
     <main class="app-shell">
       <section class="hero">
-        <p class="eyebrow">Securly Web Links Generator</p>
-        <h1>Capture the real service flow, then let Gemini propose the allow list.</h1>
+        <p class="eyebrow">Built for Educators</p>
+        <h1>Securly Web Links Generator</h1>
         <p class="hero-copy">
-          Record only the tabs and pages required for the classroom experience. The extension keeps session data
-          only for the current workflow and clears captured requests after analysis or reset.
+          Create Securly Web Links for lesson plans and inline classroom resources without manually chasing every
+          domain, sign-in redirect, and asset host. Add your API key once, start a focused recording, walk through
+          the learning flow you want students to use, and let AI generate a proposed Site and Dependencies list.
         </p>
       </section>
 
@@ -28,29 +29,35 @@
             <dt>Captured requests</dt>
             <dd id="requestCount">0</dd>
           </div>
-          <div>
-            <dt>API key</dt>
-            <dd id="apiKeyStatus">Missing</dd>
-          </div>
         </dl>
-        <div class="actions">
-          <button id="startButton" class="primary">Start Recording</button>
-          <button id="stopButton" class="secondary">Stop Recording</button>
-          <button id="analyzeButton" class="primary">Analyze With Gemini</button>
-          <button id="clearButton" class="ghost">Clear Session</button>
-        </div>
-      </section>
+        <p id="apiKeyPrompt" class="workflow-hint" hidden>
+          Recording is disabled until you
+          <a id="settingsAnchor" href="#settingsSection">provide an AI API key in the Settings below</a>.
+        </p>
+        <p id="recordingHint" class="workflow-hint"></p>
 
-      <section class="card">
-        <div class="section-heading">
-          <h2>Gemini Settings</h2>
+        <section id="analysisPanel" class="analysis-panel" hidden>
+          <div class="analysis-header">
+            <span class="spinner" aria-hidden="true"></span>
+            <div class="analysis-copy">
+              <p class="analysis-label">AI is generating Web Links</p>
+              <p id="analysisStage" class="analysis-stage">Preparing recording</p>
+            </div>
+          </div>
+          <div class="progress-track" aria-hidden="true">
+            <span class="progress-indeterminate"></span>
+          </div>
+          <div id="reasoningPanel" class="reasoning-panel" hidden>
+            <p class="reasoning-label">Latest AI reasoning</p>
+            <p id="latestReasoning" class="reasoning-text"></p>
+          </div>
+        </section>
+
+        <div class="actions">
+          <button id="startButton" class="primary">Start a New Recording</button>
+          <button id="stopButton" class="primary">Stop Recording and Generate Web Links</button>
+          <button id="cancelButton" class="ghost">Cancel Recording</button>
         </div>
-        <label class="field">
-          <span>Gemini API key</span>
-          <input id="apiKeyInput" type="password" placeholder="Paste your Gemini API key">
-        </label>
-        <p class="field-help">Stored locally in Chrome extension storage and used only for Gemini requests.</p>
-        <button id="saveSettingsButton" class="secondary settings-button">Save API Key</button>
       </section>
 
       <section class="card">
@@ -58,13 +65,12 @@
           <h2>Results</h2>
         </div>
         <p class="results-note">
-          Review the proposed values, then copy them into the Securly dashboard. Editing inside the extension is not
-          available in v1.
+          Review the proposed values, then copy them into the Securly dashboard.
         </p>
 
         <label class="field">
           <span>Site</span>
-          <textarea id="siteOutput" rows="2" readonly placeholder="Gemini will propose the primary Site value here."></textarea>
+          <textarea id="siteOutput" rows="2" readonly placeholder="AI will propose the primary Site value here."></textarea>
         </label>
         <button id="copySiteButton" class="secondary narrow">Copy Site</button>
 
@@ -74,16 +80,31 @@
             id="dependenciesOutput"
             rows="8"
             readonly
-            placeholder="Gemini will propose dependency entries here, one per line."
+            placeholder="AI will propose dependency entries here, one per line."
           ></textarea>
         </label>
         <button id="copyDependenciesButton" class="secondary narrow">Copy Dependencies</button>
 
         <details id="rationaleBlock" class="rationale" hidden>
           <summary>Analysis rationale</summary>
-          <p id="rationaleOutput"></p>
+          <ul id="rationaleOutput" class="rationale-list"></ul>
         </details>
       </section>
+
+      <details id="settingsSection" class="card settings-card">
+        <summary class="settings-summary">
+          <span class="settings-title">Settings</span>
+          <span class="settings-indicator" aria-hidden="true"></span>
+        </summary>
+        <div class="settings-body">
+          <label class="field">
+            <span>Gemini API key</span>
+            <input id="apiKeyInput" type="password" placeholder="Paste your Gemini API key">
+          </label>
+          <p class="field-help">Stored locally in Chrome extension storage and used only for Gemini requests.</p>
+          <button id="saveSettingsButton" class="secondary settings-button">Save API Key</button>
+        </div>
+      </details>
 
       <section id="errorCard" class="card error-card" hidden>
         <div class="section-heading">

@@ -1,12 +1,12 @@
 :root {
   color-scheme: light;
-  --bg: #f3efe5;
   --panel: rgba(255, 252, 247, 0.92);
   --panel-border: rgba(104, 87, 58, 0.16);
   --text: #1f1b16;
   --muted: #6b6052;
   --accent: #0a7b83;
   --accent-strong: #05545b;
+  --accent-soft: rgba(10, 123, 131, 0.08);
   --alert: #9b2c2c;
   --shadow: 0 18px 44px rgba(61, 45, 23, 0.14);
   --radius: 18px;
@@ -95,10 +95,9 @@ body {
   background: #c2410c;
 }
 
-.badge-ready,
 .badge-results {
   color: #f4fffe;
-  background: #0a7b83;
+  background: var(--accent);
 }
 
 .badge-analyzing {
@@ -113,15 +112,29 @@ body {
 
 .status-message,
 .results-note,
-.field-help {
+.field-help,
+.workflow-hint,
+.analysis-label,
+.analysis-stage,
+.reasoning-label,
+.reasoning-text,
+.rationale-detail {
   margin: 0 0 14px;
   color: var(--muted);
   line-height: 1.45;
 }
 
+.workflow-hint:last-of-type,
+.field-help,
+.analysis-stage,
+.reasoning-text,
+.rationale-detail {
+  margin-bottom: 0;
+}
+
 .stats {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   margin: 0 0 16px;
 }
@@ -129,7 +142,7 @@ body {
 .stats div {
   padding: 12px;
   border-radius: 14px;
-  background: rgba(10, 123, 131, 0.08);
+  background: var(--accent-soft);
 }
 
 .stats dt {
@@ -146,15 +159,94 @@ body {
   font-weight: 700;
 }
 
+.workflow-hint a {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.analysis-panel {
+  margin: 0 0 16px;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(255, 248, 227, 0.9);
+  border: 1px solid rgba(154, 103, 0, 0.18);
+}
+
+.analysis-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.analysis-copy {
+  min-width: 0;
+}
+
+.analysis-label {
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8a5b00;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(138, 91, 0, 0.18);
+  border-top-color: #8a5b00;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+.progress-track {
+  position: relative;
+  height: 6px;
+  margin: 14px 0 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(138, 91, 0, 0.12);
+}
+
+.progress-indeterminate {
+  position: absolute;
+  inset: 0 auto 0 -35%;
+  width: 35%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(138, 91, 0, 0), rgba(138, 91, 0, 0.75), rgba(138, 91, 0, 0));
+  animation: slide 1.4s ease-in-out infinite;
+}
+
+.reasoning-panel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(138, 91, 0, 0.14);
+}
+
+.reasoning-label {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
+.actions.single-action {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 button,
 input,
-textarea {
+textarea,
+summary {
   font: inherit;
 }
 
@@ -221,6 +313,45 @@ textarea {
   resize: vertical;
 }
 
+.settings-card {
+  padding: 0;
+}
+
+.settings-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px;
+  cursor: pointer;
+  font-weight: 700;
+  list-style: none;
+}
+
+.settings-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-title {
+  font-size: 16px;
+}
+
+.settings-indicator {
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 140ms ease;
+}
+
+.settings-card[open] .settings-indicator {
+  transform: rotate(225deg);
+}
+
+.settings-body {
+  padding: 0 18px 18px;
+}
+
 .rationale {
   margin-top: 14px;
 }
@@ -228,6 +359,29 @@ textarea {
 .rationale summary {
   cursor: pointer;
   font-weight: 700;
+}
+
+.rationale-list {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+}
+
+.rationale-list > li + li {
+  margin-top: 12px;
+}
+
+.rationale-list strong {
+  color: var(--text);
+}
+
+.rationale-sublist {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.rationale-sublist li + li {
+  margin-top: 6px;
 }
 
 .error-card {
@@ -239,4 +393,20 @@ textarea {
   margin: 0;
   color: var(--alert);
   line-height: 1.45;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes slide {
+  0% {
+    transform: translateX(0);
+  }
+
+  100% {
+    transform: translateX(320%);
+  }
 }

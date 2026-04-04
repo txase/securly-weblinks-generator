@@ -14,7 +14,9 @@ const DEFAULT_SESSION = {
   requestCount: 0,
   normalizedSummary: null,
   results: null,
-  error: null
+  error: null,
+  analysisStage: null,
+  latestReasoning: null
 };
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -45,11 +47,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         case "startRecording":
           sendResponse(await startRecording());
           break;
-        case "stopRecording":
-          sendResponse(await stopRecording());
-          break;
-        case "analyzeRecording":
-          sendResponse(await analyzeRecording());
+        case "stopRecordingAndGenerate":
+          sendResponse(await stopRecordingAndGenerate());
           break;
         case "clearSession":
           sendResponse(await clearSession());
@@ -93,6 +92,21 @@ async function setSession(session) {
   return session;
 }
 
+async function updateAnalyzingSession(patch) {
+  const session = await getSession();
+  if (session.status !== "analyzing") {
+    return session;
+  }
+
+  const nextSession = {
+    ...session,
+    ...patch
+  };
+
+  await chrome.storage.session.set({ [SESSION_KEY]: nextSession });
+  return nextSession;
+}
+
 async function buildState() {
   const [settings, session] = await Promise.all([getSettings(), getSession()]);
   return {
@@ -123,11 +137,21 @@ async function startRecording() {
   return { ok: true, session };
 }
 
-async function stopRecording() {
+async function stopRecordingAndGenerate() {
+  const settings = await getSettings();
   const session = await getSession();
 
   if (session.status !== "recording") {
     return { ok: false, error: "No recording is currently in progress." };
+  }
+
+  if (!settings.apiKey) {
+    const nextSession = await setSession({
+      ...session,
+      status: "error",
+      error: "An API key is required before AI generation can run."
+    });
+    return { ok: false, session: nextSession, error: nextSession.error };
   }
 
   if (!session.requests.length) {
@@ -135,19 +159,62 @@ async function stopRecording() {
       ...session,
       status: "error",
       stoppedAt: new Date().toISOString(),
-      error: "No useful requests were captured. Start recording and walk through the target flow again."
+      error: "No useful requests were captured. Start a new recording and walk through the lesson flow again."
     });
     return { ok: false, session: nextSession, error: nextSession.error };
   }
 
-  const nextSession = await setSession({
+  const normalizedSummary = normalizeRequests(session.requests);
+  const analyzingSession = await setSession({
     ...session,
-    status: "ready",
+    status: "analyzing",
     stoppedAt: new Date().toISOString(),
-    error: null
+    normalizedSummary,
+    error: null,
+    analysisStage: "Preparing recording",
+    latestReasoning: null
   });
 
-  return { ok: true, session: nextSession };
+  void runAnalysis(analyzingSession, settings.apiKey);
+
+  return { ok: true, session: analyzingSession };
+}
+
+async function runAnalysis(session, apiKey) {
+  try {
+    await updateAnalyzingSession({ analysisStage: "Sending to AI" });
+
+    const results = await analyzeWithGemini(session.normalizedSummary, apiKey, async (progress) => {
+      await updateAnalyzingSession(progress);
+    });
+
+    const latestSession = await getSession();
+    if (latestSession.status !== "analyzing") {
+      return;
+    }
+
+    await setSession({
+      ...DEFAULT_SESSION,
+      status: "results",
+      startedAt: session.startedAt,
+      stoppedAt: latestSession.stoppedAt,
+      requestCount: latestSession.requestCount,
+      normalizedSummary: latestSession.normalizedSummary,
+      results
+    });
+  } catch (error) {
+    const latestSession = await getSession();
+    if (latestSession.status !== "analyzing") {
+      return;
+    }
+
+    await setSession({
+      ...latestSession,
+      status: "error",
+      error: error instanceof Error ? error.message : "AI generation failed.",
+      analysisStage: null
+    });
+  }
 }
 
 async function clearSession() {
@@ -188,59 +255,6 @@ function safeParseUrl(value) {
     return new URL(value);
   } catch (_error) {
     return null;
-  }
-}
-
-async function analyzeRecording() {
-  const settings = await getSettings();
-  const session = await getSession();
-
-  if (!settings.apiKey) {
-    const nextSession = await setSession({
-      ...session,
-      status: "error",
-      error: "A Gemini API key is required before analysis can run."
-    });
-    return { ok: false, session: nextSession, error: nextSession.error };
-  }
-
-  if (!session.requests.length) {
-    const nextSession = await setSession({
-      ...session,
-      status: "error",
-      error: "There is no recorded traffic to analyze."
-    });
-    return { ok: false, session: nextSession, error: nextSession.error };
-  }
-
-  const analyzingSession = await setSession({
-    ...session,
-    status: "analyzing",
-    error: null
-  });
-
-  try {
-    const normalizedSummary = normalizeRequests(analyzingSession.requests);
-    const results = await analyzeWithGemini(normalizedSummary, settings.apiKey);
-
-    const nextSession = await setSession({
-      ...DEFAULT_SESSION,
-      status: "results",
-      startedAt: analyzingSession.startedAt,
-      stoppedAt: analyzingSession.stoppedAt || new Date().toISOString(),
-      requestCount: analyzingSession.requestCount,
-      normalizedSummary,
-      results
-    });
-
-    return { ok: true, session: nextSession };
-  } catch (error) {
-    const nextSession = await setSession({
-      ...analyzingSession,
-      status: "error",
-      error: error instanceof Error ? error.message : "Gemini analysis failed."
-    });
-    return { ok: false, session: nextSession, error: nextSession.error };
   }
 }
 
@@ -285,67 +299,202 @@ function normalizeRequests(requests) {
   };
 }
 
-async function analyzeWithGemini(normalizedSummary, apiKey) {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        generationConfig: {
-          temperature: 0.1,
-          responseMimeType: "application/json"
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: buildGeminiPrompt(normalizedSummary)
-              }
-            ]
-          }
-        ]
-      })
-    }
-  );
+async function analyzeWithGemini(normalizedSummary, apiKey, onProgress) {
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions?alt=sse", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey
+    },
+    body: JSON.stringify({
+      model: GEMINI_MODEL,
+      input: buildGeminiPrompt(normalizedSummary),
+      stream: true,
+      store: false,
+      response_mime_type: "application/json",
+      response_format: buildResponseSchema(),
+      generation_config: {
+        temperature: 0.1,
+        thinking_level: "low",
+        thinking_summaries: "auto"
+      }
+    })
+  });
 
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
-      throw new Error("Gemini rejected the API key. Verify the key and try again.");
+      throw new Error("The API key was rejected. Verify the key and try again.");
     }
 
-    throw new Error(`Gemini request failed with status ${response.status}.`);
+    throw new Error(`AI generation failed with status ${response.status}.`);
   }
 
-  const payload = await response.json();
-  const text = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim();
-  if (!text) {
-    throw new Error("Gemini returned an empty response.");
+  if (!response.body) {
+    throw new Error("AI did not return a readable response stream.");
+  }
+
+  await onProgress({ analysisStage: "Waiting for AI response" });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const outputs = new Map();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const chunk = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const event = parseSseEvent(chunk);
+      if (event) {
+        await handleStreamEvent(event, outputs, onProgress);
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+
+    if (done) {
+      if (buffer.trim()) {
+        const event = parseSseEvent(buffer);
+        if (event) {
+          await handleStreamEvent(event, outputs, onProgress);
+        }
+      }
+      break;
+    }
+  }
+
+  await onProgress({ analysisStage: "Processing results" });
+
+  const fullText = [...outputs.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([, output]) => output.text || "")
+    .join("")
+    .trim();
+
+  if (!fullText) {
+    throw new Error("AI returned an empty response.");
   }
 
   let parsed;
   try {
-    parsed = JSON.parse(stripCodeFence(text));
+    parsed = JSON.parse(stripCodeFence(fullText));
   } catch (_error) {
-    throw new Error("Gemini returned malformed JSON.");
+    throw new Error("AI returned malformed JSON.");
   }
 
-  if (typeof parsed?.site !== "string" || !parsed.site.trim()) {
-    throw new Error("Gemini response did not include a valid site value.");
+  return parseResults(parsed);
+}
+
+async function handleStreamEvent(event, outputs, onProgress) {
+  switch (event.event_type) {
+    case "interaction.start":
+      await onProgress({ analysisStage: "Sending to AI" });
+      break;
+    case "interaction.status_update":
+      await onProgress({ analysisStage: "Waiting for AI response" });
+      break;
+    case "content.start":
+      outputs.set(event.index, { type: event.content?.type || "text" });
+      break;
+    case "content.delta":
+      await accumulateDelta(event, outputs, onProgress);
+      break;
+    case "error":
+      throw new Error(event.error?.message || "AI stream failed.");
+    default:
+      break;
+  }
+}
+
+async function accumulateDelta(event, outputs, onProgress) {
+  const output = outputs.get(event.index) || { type: "text" };
+  outputs.set(event.index, output);
+
+  switch (event.delta?.type) {
+    case "text":
+      output.text = (output.text || "") + (event.delta.text || "");
+      await onProgress({ analysisStage: "Generating Web Links" });
+      break;
+    case "thought_summary":
+      output.summary = (output.summary || "") + (event.delta.content?.text || "");
+      await onProgress({
+        analysisStage: "Reviewing AI reasoning",
+        latestReasoning: output.summary.trim() || null
+      });
+      break;
+    case "thought":
+      output.summary = (output.summary || "") + (event.delta.thought || "");
+      await onProgress({
+        analysisStage: "Reviewing AI reasoning",
+        latestReasoning: output.summary.trim() || null
+      });
+      break;
+    default:
+      break;
+  }
+}
+
+function parseSseEvent(chunk) {
+  const dataLines = chunk
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart());
+
+  if (!dataLines.length) {
+    return null;
   }
 
-  if (!Array.isArray(parsed?.dependencies) || parsed.dependencies.some((value) => typeof value !== "string")) {
-    throw new Error("Gemini response did not include a valid dependencies list.");
+  try {
+    return JSON.parse(dataLines.join("\n"));
+  } catch (_error) {
+    return null;
   }
+}
+
+function parseResults(parsed) {
+  const site = typeof parsed?.site === "string" ? parsed.site.trim() : "";
+  if (!site) {
+    throw new Error("AI did not include a valid Site value.");
+  }
+
+  const siteRationale = normalizeRationale(parsed?.siteRationale, "the Site value");
+
+  if (!Array.isArray(parsed?.dependencies)) {
+    throw new Error("AI did not include a valid Dependencies list.");
+  }
+
+  const dependencies = parsed.dependencies.map((entry) => {
+    const value = typeof entry?.value === "string" ? entry.value.trim() : "";
+    if (!value) {
+      throw new Error("AI returned a dependency without a value.");
+    }
+
+    return {
+      value,
+      rationale: normalizeRationale(entry?.rationale, `dependency ${value}`)
+    };
+  });
 
   return {
-    site: parsed.site.trim(),
-    dependencies: parsed.dependencies.map((value) => value.trim()).filter(Boolean),
-    rationale: typeof parsed.rationale === "string" ? parsed.rationale.trim() : ""
+    site,
+    siteRationale,
+    dependencies
   };
+}
+
+function normalizeRationale(value, label) {
+  const why = typeof value?.why === "string" ? value.why.trim() : "";
+  const domainScope = typeof value?.domainScope === "string" ? value.domainScope.trim() : "";
+  const pathScope = typeof value?.pathScope === "string" ? value.pathScope.trim() : "";
+
+  if (!why || !domainScope || !pathScope) {
+    throw new Error(`AI returned incomplete rationale for ${label}.`);
+  }
+
+  return { why, domainScope, pathScope };
 }
 
 function stripCodeFence(value) {
@@ -361,14 +510,69 @@ function buildGeminiPrompt(normalizedSummary) {
     "",
     "Important rules:",
     "- Prefer the main instructional destination as the site value.",
-    "- Include dependencies needed for dashboard launch, authentication redirects, app loading, and core in-app functionality.",
+    "- Include dependencies to ensure all recorded requests are allowed.",
     "- Decide when a dependency should use a wildcard such as *.example.com versus a fully qualified host such as abc123.cloudfront.net.",
+    "- Prefer wildcard subdomains for well-known first-party education platforms when that better reflects the service's normal multi-subdomain structure.",
     "- Use path-specific entries only when path specificity is meaningfully safer or more precise than a whole-domain entry.",
-    "- Exclude likely incidental noise when it is not required for the target service flow.",
-    "- Return JSON only with keys: site, dependencies, rationale.",
-    "- dependencies must be an array of strings.",
+    "- Return concise, user-readable rationale that can be shown directly in a popup.",
+    "- For the site and every dependency, explain all three of these fields: why, domainScope, pathScope.",
+    "- In why, explain why the entry is included.",
+    "- In domainScope, explain why the domain is exact, wildcarded, or broader.",
+    "- In pathScope, explain why the path is absent, exact, or broader.",
+    "- Do not merge these categories together and do not leave any of them blank.",
+    "- Return JSON only.",
     "",
     "Captured request summary:",
     JSON.stringify(normalizedSummary, null, 2)
   ].join("\n");
+}
+
+function buildResponseSchema() {
+  return {
+    type: "object",
+    properties: {
+      site: {
+        type: "string",
+        description: "The main Securly Site value."
+      },
+      siteRationale: rationaleSchema("Rationale for the main Site value."),
+      dependencies: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            value: {
+              type: "string",
+              description: "A dependency domain or domain+path entry."
+            },
+            rationale: rationaleSchema("Why this dependency is included and scoped as returned.")
+          },
+          required: ["value", "rationale"]
+        }
+      }
+    },
+    required: ["site", "siteRationale", "dependencies"]
+  };
+}
+
+function rationaleSchema(description) {
+  return {
+    type: "object",
+    description,
+    properties: {
+      why: {
+        type: "string",
+        description: "Why this entry is included in the Web Links output."
+      },
+      domainScope: {
+        type: "string",
+        description: "Why the domain is exact, wildcarded, or otherwise scoped this way."
+      },
+      pathScope: {
+        type: "string",
+        description: "Why the path is absent, exact, or otherwise scoped this way."
+      }
+    },
+    required: ["why", "domainScope", "pathScope"]
+  };
 }
