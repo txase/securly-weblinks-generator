@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Securly Web Links Generator",
+  "version": "0.1.0",
+  "description": "Record a browser session and generate Securly Web Links with Gemini.",
+  "permissions": [
+    "storage",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "action": {
+    "default_title": "Securly Web Links Generator",
+    "default_popup": "src/popup.html"
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  }
+}

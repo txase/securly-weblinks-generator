@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Securly Web Links Generator</title>
+    <link rel="stylesheet" href="./popup.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <p class="eyebrow">Securly Web Links Generator</p>
+        <h1>Capture the real service flow, then let Gemini propose the allow list.</h1>
+        <p class="hero-copy">
+          Record only the tabs and pages required for the classroom experience. The extension keeps session data
+          only for the current workflow and clears captured requests after analysis or reset.
+        </p>
+      </section>
+
+      <section class="card status-card">
+        <div class="section-heading">
+          <h2>Workflow</h2>
+          <span id="statusBadge" class="badge badge-idle">Idle</span>
+        </div>
+        <p id="statusMessage" class="status-message"></p>
+        <dl class="stats">
+          <div>
+            <dt>Captured requests</dt>
+            <dd id="requestCount">0</dd>
+          </div>
+          <div>
+            <dt>API key</dt>
+            <dd id="apiKeyStatus">Missing</dd>
+          </div>
+        </dl>
+        <div class="actions">
+          <button id="startButton" class="primary">Start Recording</button>
+          <button id="stopButton" class="secondary">Stop Recording</button>
+          <button id="analyzeButton" class="primary">Analyze With Gemini</button>
+          <button id="clearButton" class="ghost">Clear Session</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <h2>Gemini Settings</h2>
+        </div>
+        <label class="field">
+          <span>Gemini API key</span>
+          <input id="apiKeyInput" type="password" placeholder="Paste your Gemini API key">
+        </label>
+        <p class="field-help">Stored locally in Chrome extension storage and used only for Gemini requests.</p>
+        <button id="saveSettingsButton" class="secondary settings-button">Save API Key</button>
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <h2>Results</h2>
+        </div>
+        <p class="results-note">
+          Review the proposed values, then copy them into the Securly dashboard. Editing inside the extension is not
+          available in v1.
+        </p>
+
+        <label class="field">
+          <span>Site</span>
+          <textarea id="siteOutput" rows="2" readonly placeholder="Gemini will propose the primary Site value here."></textarea>
+        </label>
+        <button id="copySiteButton" class="secondary narrow">Copy Site</button>
+
+        <label class="field">
+          <span>Dependencies</span>
+          <textarea
+            id="dependenciesOutput"
+            rows="8"
+            readonly
+            placeholder="Gemini will propose dependency entries here, one per line."
+          ></textarea>
+        </label>
+        <button id="copyDependenciesButton" class="secondary narrow">Copy Dependencies</button>
+
+        <details id="rationaleBlock" class="rationale" hidden>
+          <summary>Analysis rationale</summary>
+          <p id="rationaleOutput"></p>
+        </details>
+      </section>
+
+      <section id="errorCard" class="card error-card" hidden>
+        <div class="section-heading">
+          <h2>Error</h2>
+        </div>
+        <p id="errorMessage" class="error-message"></p>
+      </section>
+    </main>
+
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>
