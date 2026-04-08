@@ -11,7 +11,9 @@ const latestReasoning = document.querySelector("#latestReasoning");
 const settingsSection = document.querySelector("#settingsSection");
 const apiKeyInput = document.querySelector("#apiKeyInput");
 const siteOutput = document.querySelector("#siteOutput");
-const dependenciesOutput = document.querySelector("#dependenciesOutput");
+const contentDependenciesOutput = document.querySelector("#contentDependenciesOutput");
+const multimediaDependenciesOutput = document.querySelector("#multimediaDependenciesOutput");
+const socialMediaDependenciesOutput = document.querySelector("#socialMediaDependenciesOutput");
 const rationaleBlock = document.querySelector("#rationaleBlock");
 const rationaleOutput = document.querySelector("#rationaleOutput");
 const errorCard = document.querySelector("#errorCard");
@@ -23,7 +25,9 @@ const stopButton = document.querySelector("#stopButton");
 const cancelButton = document.querySelector("#cancelButton");
 const saveSettingsButton = document.querySelector("#saveSettingsButton");
 const copySiteButton = document.querySelector("#copySiteButton");
-const copyDependenciesButton = document.querySelector("#copyDependenciesButton");
+const copyContentDependenciesButton = document.querySelector("#copyContentDependenciesButton");
+const copyMultimediaDependenciesButton = document.querySelector("#copyMultimediaDependenciesButton");
+const copySocialMediaDependenciesButton = document.querySelector("#copySocialMediaDependenciesButton");
 
 let isBusy = false;
 let pollTimer = null;
@@ -36,8 +40,14 @@ stopButton.addEventListener("click", () => void handleAction("stopRecordingAndGe
 cancelButton.addEventListener("click", () => void handleAction("clearSession"));
 saveSettingsButton.addEventListener("click", () => void saveSettings());
 copySiteButton.addEventListener("click", () => void copyValue(siteOutput.value, copySiteButton, "Copy Site"));
-copyDependenciesButton.addEventListener("click", () =>
-  void copyValue(dependenciesOutput.value, copyDependenciesButton, "Copy Dependencies")
+copyContentDependenciesButton.addEventListener("click", () =>
+  void copyValue(contentDependenciesOutput.value, copyContentDependenciesButton, "Copy Content Dependencies")
+);
+copyMultimediaDependenciesButton.addEventListener("click", () =>
+  void copyValue(multimediaDependenciesOutput.value, copyMultimediaDependenciesButton, "Copy Multimedia Dependencies")
+);
+copySocialMediaDependenciesButton.addEventListener("click", () =>
+  void copyValue(socialMediaDependenciesOutput.value, copySocialMediaDependenciesButton, "Copy Social Media Dependencies")
 );
 settingsAnchor.addEventListener("click", (event) => {
   event.preventDefault();
@@ -98,6 +108,7 @@ function render(state) {
   const status = session.status || "idle";
   const isRecording = status === "recording";
   const isAnalyzing = status === "analyzing";
+  const results = session.results || {};
 
   statusBadge.textContent = toStatusLabel(status);
   statusBadge.className = `badge badge-${status}`;
@@ -114,9 +125,12 @@ function render(state) {
   latestReasoning.textContent = session.latestReasoning || "";
   reasoningPanel.hidden = !session.latestReasoning;
 
-  siteOutput.value = session.results?.site || "";
-  dependenciesOutput.value = (session.results?.dependencies || []).map((entry) => entry.value).join("\n");
-  renderRationale(session.results);
+  siteOutput.value = results.site || "";
+  contentDependenciesOutput.value = formatDependencyList(results.contentDependencies);
+  multimediaDependenciesOutput.value = formatDependencyList(results.multimediaDependencies);
+  socialMediaDependenciesOutput.value = formatDependencyList(results.socialMediaDependencies);
+
+  renderRationale(results);
 
   const error = status === "error" ? session.error || state?.error || "Unknown error." : "";
   errorCard.hidden = !error;
@@ -131,30 +145,42 @@ function render(state) {
   stopButton.disabled = isBusy || !isRecording;
   cancelButton.disabled = isBusy || !isRecording;
   saveSettingsButton.disabled = isBusy;
-  copySiteButton.disabled = isBusy || !session.results?.site;
-  copyDependenciesButton.disabled = isBusy || !(session.results?.dependencies || []).length;
+  copySiteButton.disabled = isBusy || !results.site;
+  copyContentDependenciesButton.disabled = isBusy || !(results.contentDependencies || []).length;
+  copyMultimediaDependenciesButton.disabled = isBusy || !(results.multimediaDependencies || []).length;
+  copySocialMediaDependenciesButton.disabled = isBusy || !(results.socialMediaDependencies || []).length;
 
   syncSettingsState(configured);
   updatePolling(isAnalyzing);
+}
+
+function formatDependencyList(entries) {
+  return (entries || []).map((entry) => entry.value).join("\n");
 }
 
 function renderRationale(results) {
   rationaleOutput.textContent = "";
 
   const items = [];
-  if (results?.site && isStructuredRationale(results.siteRationale)) {
+  if (results.site && isStructuredRationale(results.siteRationale)) {
     items.push({
-      label: `Site: ${results.site}`,
+      label: `Site: ${results.site} (${formatRequestCount(results.siteRequestCount)})`,
       rationale: results.siteRationale
     });
   }
 
-  for (const dependency of results?.dependencies || []) {
-    if (dependency?.value && isStructuredRationale(dependency?.rationale)) {
-      items.push({
-        label: dependency.value,
-        rationale: dependency.rationale
-      });
+  for (const [category, entries] of [
+    ["Content Dependency", results.contentDependencies || []],
+    ["Multimedia Dependency", results.multimediaDependencies || []],
+    ["Social Media Dependency", results.socialMediaDependencies || []]
+  ]) {
+    for (const entry of entries) {
+      if (entry?.value && isStructuredRationale(entry?.rationale)) {
+        items.push({
+          label: `${category}: ${entry.value} (${formatRequestCount(entry.requestCount)})`,
+          rationale: entry.rationale
+        });
+      }
     }
   }
 
@@ -188,6 +214,10 @@ function buildRationaleDetail(label, value) {
   detail.className = "rationale-detail";
   detail.innerHTML = `<strong>${label}:</strong> ${escapeHtml(value)}`;
   return detail;
+}
+
+function formatRequestCount(count) {
+  return count === 1 ? "1 matched request" : `${count || 0} matched requests`;
 }
 
 function escapeHtml(value) {
@@ -272,9 +302,9 @@ function buildStatusMessage(session, configured) {
     case "recording":
       return "Recording is active. Walk through the lesson flow exactly as students should experience it, including sign-in and inline resources.";
     case "analyzing":
-      return "AI is reviewing the captured traffic and generating a proposed Site value and dependency list.";
+      return "AI is reviewing the captured traffic and generating categorized Web Links results.";
     case "results":
-      return "Your Web Links are ready to review. Copy the Site and Dependencies into the Securly dashboard.";
+      return "Your Web Links are ready to review. Copy the Site and dependency groups into the Securly dashboard.";
     case "error":
       return session.error || "The workflow hit an error. Adjust the recording or settings, then try again.";
     default:

@@ -266,6 +266,7 @@ function normalizeRequests(requests) {
       hostname: request.hostname,
       paths: new Set(),
       requestTypes: new Set(),
+      contentTypes: new Set(),
       methods: new Set(),
       count: 0,
       firstSeenAt: request.timestamp,
@@ -275,6 +276,7 @@ function normalizeRequests(requests) {
     current.count += 1;
     current.paths.add(request.path || "/");
     current.requestTypes.add(request.type || "other");
+    current.contentTypes.add(mapRequestTypeToContentLabel(request.type));
     current.methods.add(request.method || "GET");
     current.lastSeenAt = request.timestamp;
     byHost.set(request.hostname, current);
@@ -286,6 +288,7 @@ function normalizeRequests(requests) {
       count: entry.count,
       samplePaths: [...entry.paths].sort().slice(0, 10),
       requestTypes: [...entry.requestTypes].sort(),
+      contentTypes: [...entry.contentTypes].sort(),
       methods: [...entry.methods].sort(),
       firstSeenAt: entry.firstSeenAt,
       lastSeenAt: entry.lastSeenAt
@@ -297,6 +300,33 @@ function normalizeRequests(requests) {
     hostCount: hosts.length,
     hosts
   };
+}
+
+function mapRequestTypeToContentLabel(requestType) {
+  switch (requestType) {
+    case "main_frame":
+    case "sub_frame":
+      return "document content";
+    case "script":
+      return "scripts";
+    case "stylesheet":
+      return "stylesheets";
+    case "image":
+      return "images";
+    case "font":
+      return "fonts";
+    case "xmlhttprequest":
+    case "fetch":
+      return "API data";
+    case "media":
+      return "video or audio";
+    case "object":
+      return "embedded media";
+    case "ping":
+      return "tracking or beacon requests";
+    default:
+      return "other web resources";
+  }
 }
 
 async function analyzeWithGemini(normalizedSummary, apiKey, onProgress) {
@@ -385,7 +415,7 @@ async function analyzeWithGemini(normalizedSummary, apiKey, onProgress) {
     throw new Error("AI returned malformed JSON.");
   }
 
-  return parseResults(parsed);
+  return parseResults(parsed, normalizedSummary);
 }
 
 async function handleStreamEvent(event, outputs, onProgress) {
@@ -454,38 +484,50 @@ function parseSseEvent(chunk) {
   }
 }
 
-function parseResults(parsed) {
+function parseResults(parsed, normalizedSummary) {
+  const hostIndex = buildHostIndex(normalizedSummary);
   const site = typeof parsed?.site === "string" ? parsed.site.trim() : "";
   if (!site) {
     throw new Error("AI did not include a valid Site value.");
   }
 
-  const siteRationale = normalizeRationale(parsed?.siteRationale, "the Site value");
-
-  if (!Array.isArray(parsed?.dependencies)) {
-    throw new Error("AI did not include a valid Dependencies list.");
-  }
-
-  const dependencies = parsed.dependencies.map((entry) => {
-    const value = typeof entry?.value === "string" ? entry.value.trim() : "";
-    if (!value) {
-      throw new Error("AI returned a dependency without a value.");
-    }
-
-    return {
-      value,
-      rationale: normalizeRationale(entry?.rationale, `dependency ${value}`)
-    };
-  });
+  const siteMatch = matchEntryToNormalizedHost(site, hostIndex);
+  const siteRationale = normalizeRationale(parsed?.siteRationale, "the Site value", siteMatch);
 
   return {
     site,
+    siteRequestCount: siteMatch.count,
+    siteContentTypes: siteMatch.contentTypes,
     siteRationale,
-    dependencies
+    contentDependencies: normalizeDependencyBucket(parsed?.contentDependencies, "Content Dependencies", hostIndex),
+    multimediaDependencies: normalizeDependencyBucket(parsed?.multimediaDependencies, "Multimedia Dependencies", hostIndex),
+    socialMediaDependencies: normalizeDependencyBucket(parsed?.socialMediaDependencies, "Social Media Dependencies", hostIndex)
   };
 }
 
-function normalizeRationale(value, label) {
+function normalizeDependencyBucket(bucket, label, hostIndex) {
+  if (!Array.isArray(bucket)) {
+    throw new Error(`AI did not include a valid ${label} list.`);
+  }
+
+  return bucket.map((entry) => {
+    const value = typeof entry?.value === "string" ? entry.value.trim() : "";
+    if (!value) {
+      throw new Error(`AI returned an entry without a value in ${label}.`);
+    }
+
+    const match = matchEntryToNormalizedHost(value, hostIndex);
+
+    return {
+      value,
+      requestCount: match.count,
+      contentTypes: match.contentTypes,
+      rationale: normalizeRationale(entry?.rationale, `${label} entry ${value}`, match)
+    };
+  });
+}
+
+function normalizeRationale(value, label, match) {
   const why = typeof value?.why === "string" ? value.why.trim() : "";
   const domainScope = typeof value?.domainScope === "string" ? value.domainScope.trim() : "";
   const pathScope = typeof value?.pathScope === "string" ? value.pathScope.trim() : "";
@@ -494,7 +536,46 @@ function normalizeRationale(value, label) {
     throw new Error(`AI returned incomplete rationale for ${label}.`);
   }
 
-  return { why, domainScope, pathScope };
+  return {
+    why: appendObservedContext(why, match),
+    domainScope,
+    pathScope
+  };
+}
+
+function appendObservedContext(text, match) {
+  const contentTypes = match.contentTypes.length ? match.contentTypes.join(", ") : "other web resources";
+  const requestLabel = match.count === 1 ? "1 matched request" : `${match.count} matched requests`;
+  return `${text} This matched ${requestLabel} in the recording and served ${contentTypes}.`;
+}
+
+function buildHostIndex(normalizedSummary) {
+  return new Map((normalizedSummary?.hosts || []).map((host) => [host.hostname.toLowerCase(), host]));
+}
+
+function matchEntryToNormalizedHost(value, hostIndex) {
+  const normalized = value.toLowerCase().replace(/^https?:\/\//, "").replace(/^\*\./, "");
+  const [hostPart] = normalized.split("/");
+  const exact = hostIndex.get(hostPart);
+  if (exact) {
+    return {
+      count: exact.count,
+      contentTypes: exact.contentTypes || []
+    };
+  }
+
+  const wildcardMatches = [...hostIndex.entries()]
+    .filter(([hostname]) => hostname === hostPart || hostname.endsWith(`.${hostPart}`))
+    .map(([, host]) => host);
+
+  if (!wildcardMatches.length) {
+    throw new Error(`AI returned ${value}, which did not match any recorded domain.`);
+  }
+
+  const contentTypes = [...new Set(wildcardMatches.flatMap((host) => host.contentTypes || []))].sort();
+  const count = wildcardMatches.reduce((sum, host) => sum + host.count, 0);
+
+  return { count, contentTypes };
 }
 
 function stripCodeFence(value) {
@@ -506,17 +587,22 @@ function buildGeminiPrompt(normalizedSummary) {
     "You are helping generate a Securly Web Link allow list for a school district.",
     "Given a summary of browser requests captured during a teacher's guided session, decide:",
     "1. the best single Securly Site value for the target service",
-    "2. the dependency domains or domain+path entries that should also be allowlisted",
+    "2. which dependency domains or domain+path entries should also be allowlisted",
+    "3. which best-fit category each dependency belongs in: content, multimedia, or social media",
     "",
     "Important rules:",
     "- Prefer the main instructional destination as the site value.",
     "- Include dependencies to ensure all recorded requests are allowed.",
+    "- Place each dependency in exactly one best-fit bucket. Do not duplicate the same dependency across categories.",
+    "- Content Dependencies are for core app/site, auth, dashboards, APIs, assets, documents, LMS resources, and general classroom web dependencies.",
+    "- Multimedia Dependencies are for substantively media-oriented services such as video, audio, or streaming platforms.",
+    "- Social Media Dependencies are for social networks, social embeds, sharing widgets, or social feeds.",
     "- Decide when a dependency should use a wildcard such as *.example.com versus a fully qualified host such as abc123.cloudfront.net.",
     "- Prefer wildcard subdomains for well-known first-party education platforms when that better reflects the service's normal multi-subdomain structure.",
     "- Use path-specific entries only when path specificity is meaningfully safer or more precise than a whole-domain entry.",
     "- Return concise, user-readable rationale that can be shown directly in a popup.",
     "- For the site and every dependency, explain all three of these fields: why, domainScope, pathScope.",
-    "- In why, explain why the entry is included.",
+    "- In why, explain why the entry is included and mention what kinds of content were observed from that domain in the recording summary.",
     "- In domainScope, explain why the domain is exact, wildcarded, or broader.",
     "- In pathScope, explain why the path is absent, exact, or broader.",
     "- Do not merge these categories together and do not leave any of them blank.",
@@ -536,22 +622,29 @@ function buildResponseSchema() {
         description: "The main Securly Site value."
       },
       siteRationale: rationaleSchema("Rationale for the main Site value."),
-      dependencies: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            value: {
-              type: "string",
-              description: "A dependency domain or domain+path entry."
-            },
-            rationale: rationaleSchema("Why this dependency is included and scoped as returned.")
-          },
-          required: ["value", "rationale"]
-        }
-      }
+      contentDependencies: dependencyBucketSchema("Dependencies for core site functionality, assets, auth, APIs, documents, and general classroom web content."),
+      multimediaDependencies: dependencyBucketSchema("Dependencies for video, audio, streaming, or otherwise media-focused platforms."),
+      socialMediaDependencies: dependencyBucketSchema("Dependencies for social networks, social embeds, and social media widgets or feeds.")
     },
-    required: ["site", "siteRationale", "dependencies"]
+    required: ["site", "siteRationale", "contentDependencies", "multimediaDependencies", "socialMediaDependencies"]
+  };
+}
+
+function dependencyBucketSchema(description) {
+  return {
+    type: "array",
+    description,
+    items: {
+      type: "object",
+      properties: {
+        value: {
+          type: "string",
+          description: "A dependency domain or domain+path entry."
+        },
+        rationale: rationaleSchema("Why this dependency is included and scoped as returned.")
+      },
+      required: ["value", "rationale"]
+    }
   };
 }
 
@@ -562,7 +655,7 @@ function rationaleSchema(description) {
     properties: {
       why: {
         type: "string",
-        description: "Why this entry is included in the Web Links output."
+        description: "Why this entry is included in the Web Links output, including observed content loaded from the domain."
       },
       domainScope: {
         type: "string",

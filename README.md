@@ -16,10 +16,10 @@ Chrome extension prototype for recording a classroom service flow and generating
 3. Click `Start a New Recording`.
 4. Navigate through the school dashboard, sign-in flow, target app, and any in-app pages that must work.
 5. Click `Stop Recording and Generate Web Links`.
-6. Copy the proposed `Site` and `Dependencies` into Securly.
+6. Copy the proposed `Site`, `Content Dependencies`, `Multimedia Dependencies`, and `Social Media Dependencies` into Securly.
 
 ## Notes
 
 - Request capture is active only during an explicit recording session.
 - Captured request data is stored only in session storage and cleared on reset or after successful analysis.
-- The popup provides live AI processing feedback, copyable `Site` and `Dependencies` outputs, and a rationale list for the chosen scope.
+- The popup provides live AI processing feedback, categorized dependency outputs, matched-request summaries, and rationale for the chosen scope.

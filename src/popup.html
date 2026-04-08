@@ -75,15 +75,37 @@
         <button id="copySiteButton" class="secondary narrow">Copy Site</button>
 
         <label class="field">
-          <span>Dependencies</span>
+          <span>Content Dependencies</span>
           <textarea
-            id="dependenciesOutput"
-            rows="8"
+            id="contentDependenciesOutput"
+            rows="6"
             readonly
-            placeholder="AI will propose dependency entries here, one per line."
+            placeholder="AI will propose general content dependencies here, one per line."
           ></textarea>
         </label>
-        <button id="copyDependenciesButton" class="secondary narrow">Copy Dependencies</button>
+        <button id="copyContentDependenciesButton" class="secondary narrow">Copy Content Dependencies</button>
+
+        <label class="field">
+          <span>Multimedia Dependencies</span>
+          <textarea
+            id="multimediaDependenciesOutput"
+            rows="5"
+            readonly
+            placeholder="AI will propose multimedia dependencies here, one per line."
+          ></textarea>
+        </label>
+        <button id="copyMultimediaDependenciesButton" class="secondary narrow">Copy Multimedia Dependencies</button>
+
+        <label class="field">
+          <span>Social Media Dependencies</span>
+          <textarea
+            id="socialMediaDependenciesOutput"
+            rows="5"
+            readonly
+            placeholder="AI will propose social media dependencies here, one per line."
+          ></textarea>
+        </label>
+        <button id="copySocialMediaDependenciesButton" class="secondary narrow">Copy Social Media Dependencies</button>
 
         <details id="rationaleBlock" class="rationale" hidden>
           <summary>Analysis rationale</summary>
