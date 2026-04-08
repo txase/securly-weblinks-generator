@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Securly Web Links Generator",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Record a browser session and generate Securly Web Links with Gemini.",
   "icons": {
     "16": "icons/icon16.png",
