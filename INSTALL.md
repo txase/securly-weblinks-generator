@@ -18,7 +18,7 @@ You should have:
 
 At the time of writing, the release archive name looks like:
 
-- `securly-weblinks-generator-v0.0.1.zip`
+- `securly-weblinks-generator-v0.0.2.zip`
 
 If you received a `.zip` file, unzip it first. Do not try to load the `.zip` directly into Chrome.
 

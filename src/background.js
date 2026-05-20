@@ -334,14 +334,14 @@ async function analyzeWithGemini(normalizedSummary, apiKey, onProgress) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-goog-api-key": apiKey
+      "x-goog-api-key": apiKey,
+      "Api-Revision": "2026-05-20"
     },
     body: JSON.stringify({
       model: GEMINI_MODEL,
       input: buildGeminiPrompt(normalizedSummary),
       stream: true,
       store: false,
-      response_mime_type: "application/json",
       response_format: buildResponseSchema(),
       generation_config: {
         temperature: 0.1,
@@ -352,11 +352,22 @@ async function analyzeWithGemini(normalizedSummary, apiKey, onProgress) {
   });
 
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new Error("The API key was rejected. Verify the key and try again.");
+    let details = "";
+    try {
+      const errorJson = await response.json();
+      details = errorJson.error?.message || JSON.stringify(errorJson);
+    } catch (_) {
+      try {
+        details = await response.text();
+      } catch (_) {}
     }
 
-    throw new Error(`AI generation failed with status ${response.status}.`);
+    const suffix = details ? `: ${details}` : "";
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(`The API key was rejected. Verify the key and try again${suffix}`);
+    }
+
+    throw new Error(`AI generation failed with status ${response.status}${suffix}`);
   }
 
   if (!response.body) {
@@ -419,17 +430,23 @@ async function analyzeWithGemini(normalizedSummary, apiKey, onProgress) {
 }
 
 async function handleStreamEvent(event, outputs, onProgress) {
+  const index = typeof event.index === "number" ? event.index : 0;
   switch (event.event_type) {
     case "interaction.start":
+    case "interaction.created":
       await onProgress({ analysisStage: "Sending to AI" });
       break;
     case "interaction.status_update":
       await onProgress({ analysisStage: "Waiting for AI response" });
       break;
     case "content.start":
-      outputs.set(event.index, { type: event.content?.type || "text" });
+      outputs.set(index, { type: event.content?.type || "text" });
+      break;
+    case "step.start":
+      outputs.set(index, { type: event.step?.type || "text" });
       break;
     case "content.delta":
+    case "step.delta":
       await accumulateDelta(event, outputs, onProgress);
       break;
     case "error":
@@ -440,30 +457,24 @@ async function handleStreamEvent(event, outputs, onProgress) {
 }
 
 async function accumulateDelta(event, outputs, onProgress) {
-  const output = outputs.get(event.index) || { type: "text" };
-  outputs.set(event.index, output);
+  const index = typeof event.index === "number" ? event.index : 0;
+  const output = outputs.get(index) || { type: "text" };
+  outputs.set(index, output);
 
-  switch (event.delta?.type) {
-    case "text":
-      output.text = (output.text || "") + (event.delta.text || "");
-      await onProgress({ analysisStage: "Generating Web Links" });
-      break;
-    case "thought_summary":
-      output.summary = (output.summary || "") + (event.delta.content?.text || "");
-      await onProgress({
-        analysisStage: "Reviewing AI reasoning",
-        latestReasoning: output.summary.trim() || null
-      });
-      break;
-    case "thought":
-      output.summary = (output.summary || "") + (event.delta.thought || "");
-      await onProgress({
-        analysisStage: "Reviewing AI reasoning",
-        latestReasoning: output.summary.trim() || null
-      });
-      break;
-    default:
-      break;
+  const text = event.delta?.text;
+  const thought = event.delta?.thought || event.delta?.content?.text;
+
+  if (text) {
+    output.text = (output.text || "") + text;
+    await onProgress({ analysisStage: "Generating Web Links" });
+  }
+
+  if (thought) {
+    output.summary = (output.summary || "") + thought;
+    await onProgress({
+      analysisStage: "Reviewing AI reasoning",
+      latestReasoning: output.summary.trim() || null
+    });
   }
 }
 
