@@ -8,7 +8,7 @@ Teachers can record a path through a district portal, sign-in sequence, LMS, les
 - categorized dependency groups for supporting domains
 - rationale explaining why each site is included and how broadly it should be scoped
 
-For local installation instructions, see [INSTALL.md](/Users/chasedouglas/devel/securly-weblinks-generator/INSTALL.md).
+For local installation instructions, see [INSTALL.md](INSTALL.md).
 
 ## What It Does
 
@@ -50,7 +50,7 @@ This project is intended to reduce the trial-and-error involved in discovering t
 - [src/popup.html](/Users/chasedouglas/devel/securly-weblinks-generator/src/popup.html): popup UI markup
 - [src/popup.js](/Users/chasedouglas/devel/securly-weblinks-generator/src/popup.js): popup rendering and user actions
 - [src/popup.css](/Users/chasedouglas/devel/securly-weblinks-generator/src/popup.css): popup styling
-- [INSTALL.md](/Users/chasedouglas/devel/securly-weblinks-generator/INSTALL.md): educator-friendly install instructions for the unpacked extension
+- [INSTALL.md](INSTALL.md): educator-friendly install instructions for the unpacked extension
 
 ## Notes
 
