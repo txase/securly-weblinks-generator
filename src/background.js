@@ -1,18 +1,21 @@
 const SETTINGS_KEY = "settings";
 const SESSION_KEY = "session";
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.8-flash";
+const NETWORK_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:"]);
+let recordingQueue = Promise.resolve();
 
 const DEFAULT_SETTINGS = {
-  apiKey: ""
+  apiKey: "",
+  recordingMode: "all"
 };
 
 const DEFAULT_SESSION = {
   status: "idle",
+  recordingMode: "all",
   startedAt: null,
   stoppedAt: null,
   requests: [],
   requestCount: 0,
-  normalizedSummary: null,
   results: null,
   error: null,
   analysisStage: null,
@@ -29,7 +32,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    void recordRequest(details);
+    void queueRecordingAction(() => recordRequest(details)).catch(console.error);
   },
   { urls: ["<all_urls>"] }
 );
@@ -45,13 +48,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse(await saveSettings(message.payload));
           break;
         case "startRecording":
-          sendResponse(await startRecording());
+          sendResponse(await queueRecordingAction(startRecording));
           break;
         case "stopRecordingAndGenerate":
-          sendResponse(await stopRecordingAndGenerate());
+          sendResponse(await queueRecordingAction(stopRecordingAndGenerate));
           break;
         case "clearSession":
-          sendResponse(await clearSession());
+          sendResponse(await queueRecordingAction(clearSession));
           break;
         default:
           sendResponse({ ok: false, error: "Unknown message type." });
@@ -67,6 +70,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   return true;
 });
+
+function queueRecordingAction(action) {
+  const result = recordingQueue.then(action);
+  recordingQueue = result.catch(() => {});
+  return result;
+}
 
 async function initializeStorage() {
   const stored = await chrome.storage.local.get([SETTINGS_KEY]);
@@ -112,25 +121,35 @@ async function buildState() {
   return {
     ok: true,
     settings: {
-      apiKeyConfigured: Boolean(settings.apiKey)
+      apiKeyConfigured: Boolean(settings.apiKey),
+      recordingMode: settings.recordingMode
     },
     session
   };
 }
 
 async function saveSettings(payload) {
-  const nextSettings = {
-    apiKey: String(payload?.apiKey || "").trim()
-  };
+  const nextSettings = await getSettings();
+  if (typeof payload?.apiKey === "string") {
+    nextSettings.apiKey = payload.apiKey.trim();
+  }
+  if (payload?.recordingMode === "all" || payload?.recordingMode === "navigation") {
+    nextSettings.recordingMode = payload.recordingMode;
+  }
 
   await chrome.storage.local.set({ [SETTINGS_KEY]: nextSettings });
   return buildState();
 }
 
 async function startRecording() {
+  if ((await getSession()).status === "analyzing") {
+    return { ok: false, error: "Wait for the current analysis to finish." };
+  }
+  const { recordingMode } = await getSettings();
   const session = await setSession({
     ...DEFAULT_SESSION,
     status: "recording",
+    recordingMode,
     startedAt: new Date().toISOString()
   });
 
@@ -164,12 +183,10 @@ async function stopRecordingAndGenerate() {
     return { ok: false, session: nextSession, error: nextSession.error };
   }
 
-  const normalizedSummary = normalizeRequests(session.requests);
   const analyzingSession = await setSession({
     ...session,
     status: "analyzing",
     stoppedAt: new Date().toISOString(),
-    normalizedSummary,
     error: null,
     analysisStage: "Preparing recording",
     latestReasoning: null
@@ -184,7 +201,7 @@ async function runAnalysis(session, apiKey) {
   try {
     await updateAnalyzingSession({ analysisStage: "Sending to AI" });
 
-    const results = await analyzeWithGemini(session.normalizedSummary, apiKey, async (progress) => {
+    const results = await analyzeWithGemini(session, apiKey, async (progress) => {
       await updateAnalyzingSession(progress);
     });
 
@@ -196,10 +213,10 @@ async function runAnalysis(session, apiKey) {
     await setSession({
       ...DEFAULT_SESSION,
       status: "results",
+      recordingMode: session.recordingMode,
       startedAt: session.startedAt,
       stoppedAt: latestSession.stoppedAt,
       requestCount: latestSession.requestCount,
-      normalizedSummary: latestSession.normalizedSummary,
       results
     });
   } catch (error) {
@@ -218,6 +235,9 @@ async function runAnalysis(session, apiKey) {
 }
 
 async function clearSession() {
+  if ((await getSession()).status === "analyzing") {
+    return { ok: false, error: "Wait for the current analysis to finish." };
+  }
   const session = await setSession({ ...DEFAULT_SESSION });
   return { ok: true, session };
 }
@@ -228,18 +248,18 @@ async function recordRequest(details) {
     return;
   }
 
-  const url = safeParseUrl(details.url);
-  if (!url || url.protocol.startsWith("chrome")) {
+  if (session.recordingMode === "navigation" && details.type !== "main_frame") {
+    return;
+  }
+
+  const url = parseNetworkUrl(details.url);
+  if (!url) {
     return;
   }
 
   const request = {
-    url: details.url,
-    hostname: url.hostname,
-    path: url.pathname || "/",
-    type: details.type || "other",
-    method: details.method || "GET",
-    timestamp: new Date().toISOString()
+    url: url.origin + url.pathname,
+    type: details.type || "other"
   };
 
   const requests = [...session.requests, request];
@@ -258,48 +278,11 @@ function safeParseUrl(value) {
   }
 }
 
-function normalizeRequests(requests) {
-  const byHost = new Map();
-
-  for (const request of requests) {
-    const current = byHost.get(request.hostname) || {
-      hostname: request.hostname,
-      paths: new Set(),
-      requestTypes: new Set(),
-      contentTypes: new Set(),
-      methods: new Set(),
-      count: 0,
-      firstSeenAt: request.timestamp,
-      lastSeenAt: request.timestamp
-    };
-
-    current.count += 1;
-    current.paths.add(request.path || "/");
-    current.requestTypes.add(request.type || "other");
-    current.contentTypes.add(mapRequestTypeToContentLabel(request.type));
-    current.methods.add(request.method || "GET");
-    current.lastSeenAt = request.timestamp;
-    byHost.set(request.hostname, current);
-  }
-
-  const hosts = [...byHost.values()]
-    .map((entry) => ({
-      hostname: entry.hostname,
-      count: entry.count,
-      samplePaths: [...entry.paths].sort().slice(0, 10),
-      requestTypes: [...entry.requestTypes].sort(),
-      contentTypes: [...entry.contentTypes].sort(),
-      methods: [...entry.methods].sort(),
-      firstSeenAt: entry.firstSeenAt,
-      lastSeenAt: entry.lastSeenAt
-    }))
-    .sort((left, right) => right.count - left.count || left.hostname.localeCompare(right.hostname));
-
-  return {
-    capturedRequestCount: requests.length,
-    hostCount: hosts.length,
-    hosts
-  };
+function parseNetworkUrl(value) {
+  const url = safeParseUrl(value);
+  if (!url || !NETWORK_PROTOCOLS.has(url.protocol)) return null;
+  if (url.hostname.endsWith(".")) url.hostname = url.hostname.slice(0, -1);
+  return url;
 }
 
 function mapRequestTypeToContentLabel(requestType) {
@@ -329,7 +312,8 @@ function mapRequestTypeToContentLabel(requestType) {
   }
 }
 
-async function analyzeWithGemini(normalizedSummary, apiKey, onProgress) {
+async function analyzeWithGemini(session, apiKey, onProgress) {
+  const recording = await buildRuleCandidates(session.requests);
   const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions?alt=sse", {
     method: "POST",
     headers: {
@@ -339,12 +323,14 @@ async function analyzeWithGemini(normalizedSummary, apiKey, onProgress) {
     },
     body: JSON.stringify({
       model: GEMINI_MODEL,
-      input: buildGeminiPrompt(normalizedSummary),
+      input: [
+        { type: "text", text: buildGeminiInstructions(session.recordingMode) },
+        { type: "text", text: JSON.stringify(recording.requests.map(({ url }) => url.origin + url.pathname)) }
+      ],
       stream: true,
       store: false,
-      response_format: buildResponseSchema(),
+      response_format: buildResponseSchema(recording),
       generation_config: {
-        temperature: 0.1,
         thinking_level: "low",
         thinking_summaries: "auto"
       }
@@ -385,15 +371,15 @@ async function analyzeWithGemini(normalizedSummary, apiKey, onProgress) {
     const { done, value } = await reader.read();
     buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
 
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const chunk = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
+    let boundary = /\r?\n\r?\n/.exec(buffer);
+    while (boundary) {
+      const chunk = buffer.slice(0, boundary.index);
+      buffer = buffer.slice(boundary.index + boundary[0].length);
       const event = parseSseEvent(chunk);
       if (event) {
         await handleStreamEvent(event, outputs, onProgress);
       }
-      boundary = buffer.indexOf("\n\n");
+      boundary = /\r?\n\r?\n/.exec(buffer);
     }
 
     if (done) {
@@ -426,7 +412,7 @@ async function analyzeWithGemini(normalizedSummary, apiKey, onProgress) {
     throw new Error("AI returned malformed JSON.");
   }
 
-  return parseResults(parsed, normalizedSummary);
+  return parseResults(parsed, recording);
 }
 
 async function handleStreamEvent(event, outputs, onProgress) {
@@ -495,47 +481,115 @@ function parseSseEvent(chunk) {
   }
 }
 
-function parseResults(parsed, normalizedSummary) {
-  const hostIndex = buildHostIndex(normalizedSummary);
-  const site = typeof parsed?.site === "string" ? parsed.site.trim() : "";
-  if (!site) {
-    throw new Error("AI did not include a valid Site value.");
+async function buildRuleCandidates(capturedRequests) {
+  const requests = capturedRequests
+    .map(({ url, type }) => ({ url: parseNetworkUrl(url), type }))
+    .filter(({ url }) => url);
+  const siteHosts = new Map();
+  const dependencyDomains = new Set();
+  for (const { url, type } of requests) {
+    if (type !== "main_frame" || !["http:", "https:"].includes(url.protocol)) continue;
+    if (!siteHosts.has(url.host)) siteHosts.set(url.host, url);
+    dependencyDomains.add(url.hostname);
   }
 
-  const siteMatch = matchEntryToNormalizedHost(site, hostIndex);
-  const siteRationale = normalizeRationale(parsed?.siteRationale, "the Site value", siteMatch);
+  if (!siteHosts.size) {
+    throw new Error("No top-level pages were captured. Start a new recording and open the lesson in a browser tab.");
+  }
+
+  const response = await fetch(chrome.runtime.getURL("src/public_suffix_list.dat"));
+  if (!response.ok) throw new Error("Could not load the domain rules for this extension.");
+  const suffixes = parsePublicSuffixList(await response.text());
+  const hostsByParent = new Map();
+  for (const host of dependencyDomains) {
+    // IP addresses and single-label hosts cannot supply wildcard candidates.
+    if (!/[a-z]/.test(host) || host.includes(":")) continue;
+    for (let dot = host.indexOf("."); dot !== -1; dot = host.indexOf(".", dot + 1)) {
+      const parent = host.slice(dot + 1);
+      if (isPublicSuffix(parent, suffixes)) break;
+      hostsByParent.set(parent, (hostsByParent.get(parent) || 0) + 1);
+    }
+  }
+  for (const [parent, count] of hostsByParent) {
+    if (count > 1) dependencyDomains.add(`*.${parent}`);
+  }
+
+  return { requests, siteHosts, dependencyDomains, suffixes };
+}
+
+function parsePublicSuffixList(text) {
+  const suffixes = new Set();
+  for (const line of text.split(/\r?\n/)) {
+    const rule = line.trim();
+    if (!rule || rule.startsWith("//")) continue;
+    const prefix = rule.startsWith("*.") ? "*." : rule.startsWith("!") ? "!" : "";
+    const domain = safeParseUrl(`https://${rule.slice(prefix.length)}`)?.hostname;
+    if (domain) suffixes.add(prefix + domain);
+  }
+  return suffixes;
+}
+
+function isPublicSuffix(domain, suffixes) {
+  const dot = domain.indexOf(".");
+  return !suffixes.has(`!${domain}`) &&
+    (dot === -1 || suffixes.has(domain) || suffixes.has(`*.${domain.slice(dot + 1)}`));
+}
+
+function matchesDependency(host, rule) {
+  return rule.startsWith("*.") ? host.endsWith(rule.slice(1)) : host === rule;
+}
+
+function matchesSite(url, site, suffixes) {
+  const host = site.hostname;
+  const base = host.replace(/^www\./, "");
+  const dot = base.indexOf(".");
+  const isRoot = dot !== -1 && /[a-z]/.test(base) && !isPublicSuffix(base, suffixes) &&
+    isPublicSuffix(base.slice(dot + 1), suffixes);
+  return url.hostname === host ||
+    (isRoot && (url.hostname === base || url.hostname.endsWith(`.${base}`)));
+}
+
+function parseResults(parsed, recording) {
+  const { requests, siteHosts, dependencyDomains, suffixes } = recording;
+  const site = siteHosts.get(parsed?.site?.domain);
+  if (!site) {
+    throw new Error("AI selected a Site domain outside the recorded choices.");
+  }
+  if (!Array.isArray(parsed.dependencies)) {
+    throw new Error("AI did not include a valid Dependencies list.");
+  }
+
+  const siteCovers = (url) => matchesSite(url, site, suffixes);
+  const siteMatch = summarizeMatches(requests, siteCovers);
+  const dependencies = new Map();
+  for (const entry of parsed.dependencies) {
+    if (!dependencyDomains.has(entry?.domain) || entry.path !== "") {
+      throw new Error("AI selected a dependency outside the allowed domain and path choices.");
+    }
+    if (matchesDependency(site.hostname, entry.domain)) continue;
+    const covers = (url) => matchesDependency(url.hostname, entry.domain);
+    const match = summarizeMatches(requests, covers);
+    const rationale = normalizeRationale(entry.rationale, entry.domain, match);
+    const addsCoverage = requests.some(({ url, type }) =>
+      type === "main_frame" && covers(url) && !siteCovers(url)
+    );
+    if (addsCoverage && !dependencies.has(entry.domain)) {
+      dependencies.set(entry.domain, { value: entry.domain, requestCount: match.count, rationale });
+    }
+  }
 
   return {
-    site,
+    site: site.origin,
     siteRequestCount: siteMatch.count,
-    siteContentTypes: siteMatch.contentTypes,
-    siteRationale,
-    contentDependencies: normalizeDependencyBucket(parsed?.contentDependencies, "Content Dependencies", hostIndex),
-    multimediaDependencies: normalizeDependencyBucket(parsed?.multimediaDependencies, "Multimedia Dependencies", hostIndex),
-    socialMediaDependencies: normalizeDependencyBucket(parsed?.socialMediaDependencies, "Social Media Dependencies", hostIndex)
+    siteRationale: normalizeRationale(parsed.siteRationale, "the Site value", siteMatch),
+    dependencies: [...dependencies.values()]
   };
 }
 
-function normalizeDependencyBucket(bucket, label, hostIndex) {
-  if (!Array.isArray(bucket)) {
-    throw new Error(`AI did not include a valid ${label} list.`);
-  }
-
-  return bucket.map((entry) => {
-    const value = typeof entry?.value === "string" ? entry.value.trim() : "";
-    if (!value) {
-      throw new Error(`AI returned an entry without a value in ${label}.`);
-    }
-
-    const match = matchEntryToNormalizedHost(value, hostIndex);
-
-    return {
-      value,
-      requestCount: match.count,
-      contentTypes: match.contentTypes,
-      rationale: normalizeRationale(entry?.rationale, `${label} entry ${value}`, match)
-    };
-  });
+function summarizeMatches(requests, matches) {
+  const matched = requests.filter(({ url }) => matches(url));
+  const contentTypes = [...new Set(matched.map(({ type }) => mapRequestTypeToContentLabel(type)))].sort();
+  return { count: matched.length, contentTypes };
 }
 
 function normalizeRationale(value, label, match) {
@@ -557,106 +611,73 @@ function normalizeRationale(value, label, match) {
 function appendObservedContext(text, match) {
   const contentTypes = match.contentTypes.length ? match.contentTypes.join(", ") : "other web resources";
   const requestLabel = match.count === 1 ? "1 matched request" : `${match.count} matched requests`;
-  return `${text} This matched ${requestLabel} in the recording and served ${contentTypes}.`;
-}
-
-function buildHostIndex(normalizedSummary) {
-  return new Map((normalizedSummary?.hosts || []).map((host) => [host.hostname.toLowerCase(), host]));
-}
-
-function matchEntryToNormalizedHost(value, hostIndex) {
-  const normalized = value.toLowerCase().replace(/^https?:\/\//, "").replace(/^\*\./, "");
-  const [hostPart] = normalized.split("/");
-  const exact = hostIndex.get(hostPart);
-  if (exact) {
-    return {
-      count: exact.count,
-      contentTypes: exact.contentTypes || []
-    };
-  }
-
-  const wildcardMatches = [...hostIndex.entries()]
-    .filter(([hostname]) => hostname === hostPart || hostname.endsWith(`.${hostPart}`))
-    .map(([, host]) => host);
-
-  if (!wildcardMatches.length) {
-    throw new Error(`AI returned ${value}, which did not match any recorded domain.`);
-  }
-
-  const contentTypes = [...new Set(wildcardMatches.flatMap((host) => host.contentTypes || []))].sort();
-  const count = wildcardMatches.reduce((sum, host) => sum + host.count, 0);
-
-  return { count, contentTypes };
+  return `${text} This matched ${requestLabel} in the recording for ${contentTypes}.`;
 }
 
 function stripCodeFence(value) {
   return value.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
 }
 
-function buildGeminiPrompt(normalizedSummary) {
+function buildGeminiInstructions(recordingMode) {
   return [
-    "You are helping generate a Securly Web Link allow list for a school district.",
-    "Given a summary of browser requests captured during a teacher's guided session, decide:",
+    "You are helping generate a Securly Web Link for an Allow-list Access Plan.",
+    "Given a JSON array of browser request URLs in capture order from a teacher's guided session, decide:",
     "1. the best single Securly Site value for the target service",
-    "2. which dependency domains or domain+path entries should also be allowlisted",
-    "3. which best-fit category each dependency belongs in: content, multimedia, or social media",
+    "2. which dependency domains should also be allowlisted",
     "",
     "Important rules:",
     "- Prefer the main instructional destination as the site value.",
-    "- Include dependencies to ensure all recorded requests are allowed.",
-    "- Place each dependency in exactly one best-fit bucket. Do not duplicate the same dependency across categories.",
-    "- Content Dependencies are for core app/site, auth, dashboards, APIs, assets, documents, LMS resources, and general classroom web dependencies.",
-    "- Multimedia Dependencies are for substantively media-oriented services such as video, audio, or streaming platforms.",
-    "- Social Media Dependencies are for social networks, social embeds, sharing widgets, or social feeds.",
+    "- Choose the main instructional Site host from the schema. Use recorded paths as context for that choice.",
+    "- In an Allow-list Access Plan, the Site covers all paths on its host. A root domain or its www form also covers its subdomains.",
+    "- Never include a dependency that matches the Site host.",
+    "- Include dependencies for the required top-level destinations that the Site does not already allow. The schema limits candidates to top-level evidence.",
+    ...(recordingMode === "navigation" ? [
+      "- This recording contains only top-level page requests. Do not infer unobserved background or embedded resources."
+    ] : []),
+    "- Do not duplicate dependencies.",
     "- Decide when a dependency should use a wildcard such as *.example.com versus a fully qualified host such as abc123.cloudfront.net.",
     "- Prefer wildcard subdomains for well-known first-party education platforms when that better reflects the service's normal multi-subdomain structure.",
-    "- Use path-specific entries only when path specificity is meaningfully safer or more precise than a whole-domain entry.",
+    "- A dependency path of an empty string means the entire host or wildcard scope.",
     "- Return concise, user-readable rationale that can be shown directly in a popup.",
     "- For the site and every dependency, explain all three of these fields: why, domainScope, pathScope.",
-    "- In why, explain why the entry is included and mention what kinds of content were observed from that domain in the recording summary.",
+    "- In why, explain why the entry is included using the recorded URLs as evidence.",
     "- In domainScope, explain why the domain is exact, wildcarded, or broader.",
-    "- In pathScope, explain why the path is absent, exact, or broader.",
-    "- Do not merge these categories together and do not leave any of them blank.",
-    "- Return JSON only.",
-    "",
-    "Captured request summary:",
-    JSON.stringify(normalizedSummary, null, 2)
+    "- In pathScope, explain why the rule covers all paths.",
+    "- Do not merge the rationale fields or leave any of them blank.",
+    "- Return JSON only."
   ].join("\n");
 }
 
-function buildResponseSchema() {
+function buildResponseSchema({ siteHosts, dependencyDomains }) {
   return {
-    type: "object",
-    properties: {
-      site: {
-        type: "string",
-        description: "The main Securly Site value."
+    type: "text",
+    mime_type: "application/json",
+    schema: requiredObject({
+      site: requiredObject({ domain: stringEnum([...siteHosts.keys()]) }),
+      dependencies: {
+        type: "array",
+        items: requiredObject({
+          domain: stringEnum([...dependencyDomains]),
+          path: stringEnum([""]),
+          rationale: rationaleSchema("Why this dependency is included and scoped as returned.")
+        })
       },
-      siteRationale: rationaleSchema("Rationale for the main Site value."),
-      contentDependencies: dependencyBucketSchema("Dependencies for core site functionality, assets, auth, APIs, documents, and general classroom web content."),
-      multimediaDependencies: dependencyBucketSchema("Dependencies for video, audio, streaming, or otherwise media-focused platforms."),
-      socialMediaDependencies: dependencyBucketSchema("Dependencies for social networks, social embeds, and social media widgets or feeds.")
-    },
-    required: ["site", "siteRationale", "contentDependencies", "multimediaDependencies", "socialMediaDependencies"]
+      siteRationale: rationaleSchema("Rationale for the main Site value.")
+    })
   };
 }
 
-function dependencyBucketSchema(description) {
+function requiredObject(properties) {
   return {
-    type: "array",
-    description,
-    items: {
-      type: "object",
-      properties: {
-        value: {
-          type: "string",
-          description: "A dependency domain or domain+path entry."
-        },
-        rationale: rationaleSchema("Why this dependency is included and scoped as returned.")
-      },
-      required: ["value", "rationale"]
-    }
+    type: "object",
+    properties,
+    required: Object.keys(properties),
+    additionalProperties: false
   };
+}
+
+function stringEnum(values) {
+  return { type: "string", enum: values };
 }
 
 function rationaleSchema(description) {
@@ -666,7 +687,7 @@ function rationaleSchema(description) {
     properties: {
       why: {
         type: "string",
-        description: "Why this entry is included in the Web Links output, including observed content loaded from the domain."
+        description: "Why this entry is included in the Web Links output based on the observed URLs."
       },
       domainScope: {
         type: "string",
@@ -674,7 +695,7 @@ function rationaleSchema(description) {
       },
       pathScope: {
         type: "string",
-        description: "Why the path is absent, exact, or otherwise scoped this way."
+        description: "Why this rule covers all paths."
       }
     },
     required: ["why", "domainScope", "pathScope"]

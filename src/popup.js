@@ -10,10 +10,9 @@ const reasoningPanel = document.querySelector("#reasoningPanel");
 const latestReasoning = document.querySelector("#latestReasoning");
 const settingsSection = document.querySelector("#settingsSection");
 const apiKeyInput = document.querySelector("#apiKeyInput");
+const recordingModeInput = document.querySelector("#recordingModeInput");
 const siteOutput = document.querySelector("#siteOutput");
-const contentDependenciesOutput = document.querySelector("#contentDependenciesOutput");
-const multimediaDependenciesOutput = document.querySelector("#multimediaDependenciesOutput");
-const socialMediaDependenciesOutput = document.querySelector("#socialMediaDependenciesOutput");
+const dependenciesOutput = document.querySelector("#dependenciesOutput");
 const rationaleBlock = document.querySelector("#rationaleBlock");
 const rationaleOutput = document.querySelector("#rationaleOutput");
 const errorCard = document.querySelector("#errorCard");
@@ -25,9 +24,7 @@ const stopButton = document.querySelector("#stopButton");
 const cancelButton = document.querySelector("#cancelButton");
 const saveSettingsButton = document.querySelector("#saveSettingsButton");
 const copySiteButton = document.querySelector("#copySiteButton");
-const copyContentDependenciesButton = document.querySelector("#copyContentDependenciesButton");
-const copyMultimediaDependenciesButton = document.querySelector("#copyMultimediaDependenciesButton");
-const copySocialMediaDependenciesButton = document.querySelector("#copySocialMediaDependenciesButton");
+const copyDependenciesButton = document.querySelector("#copyDependenciesButton");
 
 let isBusy = false;
 let pollTimer = null;
@@ -39,15 +36,10 @@ startButton.addEventListener("click", () => void handleAction("startRecording"))
 stopButton.addEventListener("click", () => void handleAction("stopRecordingAndGenerate"));
 cancelButton.addEventListener("click", () => void handleAction("clearSession"));
 saveSettingsButton.addEventListener("click", () => void saveSettings());
+recordingModeInput.addEventListener("change", () => void saveRecordingMode());
 copySiteButton.addEventListener("click", () => void copyValue(siteOutput.value, copySiteButton, "Copy Site"));
-copyContentDependenciesButton.addEventListener("click", () =>
-  void copyValue(contentDependenciesOutput.value, copyContentDependenciesButton, "Copy Content Dependencies")
-);
-copyMultimediaDependenciesButton.addEventListener("click", () =>
-  void copyValue(multimediaDependenciesOutput.value, copyMultimediaDependenciesButton, "Copy Multimedia Dependencies")
-);
-copySocialMediaDependenciesButton.addEventListener("click", () =>
-  void copyValue(socialMediaDependenciesOutput.value, copySocialMediaDependenciesButton, "Copy Social Media Dependencies")
+copyDependenciesButton.addEventListener("click", () =>
+  void copyValue(dependenciesOutput.value, copyDependenciesButton, "Copy Dependencies")
 );
 settingsAnchor.addEventListener("click", (event) => {
   event.preventDefault();
@@ -71,6 +63,7 @@ async function refresh() {
 }
 
 async function handleAction(type) {
+  if (isBusy) return;
   setBusy(true);
   await sendMessage({ type });
   setBusy(false);
@@ -78,6 +71,7 @@ async function handleAction(type) {
 }
 
 async function saveSettings() {
+  if (isBusy) return;
   setBusy(true);
   await sendMessage({
     type: "saveSettings",
@@ -88,6 +82,23 @@ async function saveSettings() {
   apiKeyInput.value = "";
   setBusy(false);
   await refresh();
+}
+
+async function saveRecordingMode() {
+  if (isBusy) return;
+  setBusy(true);
+  const response = await sendMessage({
+    type: "saveSettings",
+    payload: { recordingMode: recordingModeInput.value }
+  });
+  setBusy(false);
+  if (response.ok) {
+    render(response);
+  } else {
+    await refresh();
+    errorCard.hidden = false;
+    errorMessage.textContent = "Could not save the recording mode. Try again.";
+  }
 }
 
 async function copyValue(value, button, label) {
@@ -109,11 +120,19 @@ function render(state) {
   const isRecording = status === "recording";
   const isAnalyzing = status === "analyzing";
   const results = session.results || {};
+  const recordingMode = state?.settings?.recordingMode === "navigation" ? "navigation" : "all";
 
   statusBadge.textContent = toStatusLabel(status);
   statusBadge.className = `badge badge-${status}`;
   statusMessage.textContent = buildStatusMessage(session, configured);
   requestCount.textContent = String(session.requestCount || 0);
+  if (!isBusy) {
+    recordingModeInput.value = recordingMode;
+  }
+  recordingModeInput.disabled = isBusy || isAnalyzing;
+  recordingModeInput.title = isRecording
+    ? `This recording is using ${session.recordingMode === "navigation" ? "top-level page loads only" : "all requests"}; changes apply to the next recording.`
+    : "Changes are saved immediately and apply to the next recording.";
 
   apiKeyPrompt.hidden = configured;
   const hint = configured ? buildRecordingHint(status) : "";
@@ -126,9 +145,7 @@ function render(state) {
   reasoningPanel.hidden = !session.latestReasoning;
 
   siteOutput.value = results.site || "";
-  contentDependenciesOutput.value = formatDependencyList(results.contentDependencies);
-  multimediaDependenciesOutput.value = formatDependencyList(results.multimediaDependencies);
-  socialMediaDependenciesOutput.value = formatDependencyList(results.socialMediaDependencies);
+  dependenciesOutput.value = formatDependencyList(results.dependencies);
 
   renderRationale(results);
 
@@ -146,9 +163,7 @@ function render(state) {
   cancelButton.disabled = isBusy || !isRecording;
   saveSettingsButton.disabled = isBusy;
   copySiteButton.disabled = isBusy || !results.site;
-  copyContentDependenciesButton.disabled = isBusy || !(results.contentDependencies || []).length;
-  copyMultimediaDependenciesButton.disabled = isBusy || !(results.multimediaDependencies || []).length;
-  copySocialMediaDependenciesButton.disabled = isBusy || !(results.socialMediaDependencies || []).length;
+  copyDependenciesButton.disabled = isBusy || !(results.dependencies || []).length;
 
   syncSettingsState(configured);
   updatePolling(isAnalyzing);
@@ -169,18 +184,12 @@ function renderRationale(results) {
     });
   }
 
-  for (const [category, entries] of [
-    ["Content Dependency", results.contentDependencies || []],
-    ["Multimedia Dependency", results.multimediaDependencies || []],
-    ["Social Media Dependency", results.socialMediaDependencies || []]
-  ]) {
-    for (const entry of entries) {
-      if (entry?.value && isStructuredRationale(entry?.rationale)) {
-        items.push({
-          label: `${category}: ${entry.value} (${formatRequestCount(entry.requestCount)})`,
-          rationale: entry.rationale
-        });
-      }
+  for (const entry of results.dependencies || []) {
+    if (entry?.value && isStructuredRationale(entry?.rationale)) {
+      items.push({
+        label: `Dependency: ${entry.value} (${formatRequestCount(entry.requestCount)})`,
+        rationale: entry.rationale
+      });
     }
   }
 
@@ -280,6 +289,13 @@ function stopPolling() {
 
 function setBusy(busy) {
   isBusy = busy;
+  if (busy) {
+    recordingModeInput.disabled = true;
+    startButton.disabled = true;
+    stopButton.disabled = true;
+    cancelButton.disabled = true;
+    saveSettingsButton.disabled = true;
+  }
 }
 
 function toStatusLabel(status) {

@@ -245,6 +245,7 @@ body {
 
 button,
 input,
+select,
 textarea,
 summary {
   font: inherit;
@@ -300,6 +301,7 @@ button:disabled {
 }
 
 input,
+select,
 textarea {
   width: 100%;
   padding: 12px 14px;
@@ -307,6 +309,10 @@ textarea {
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.72);
   color: var(--text);
+}
+
+.recording-mode-help {
+  margin: -4px 0 16px;
 }
 
 textarea {

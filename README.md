@@ -5,21 +5,19 @@ Securly Web Links Generator is a Chrome extension that helps educators build Sec
 Teachers can record a path through a district portal, sign-in sequence, LMS, lesson resource, or embedded tool, then let AI suggest:
 
 - the primary `Site` value for Securly
-- categorized dependency groups for supporting domains
+- one `Dependencies` list for supporting domains
 - rationale explaining why each site is included and how broadly it should be scoped
 
 For local installation instructions, see [INSTALL.md](INSTALL.md).
 
 ## What It Does
 
-The extension records browser request activity during an explicit teacher-started session, normalizes those requests into a domain summary, and sends that summary to AI for analysis. The output is organized to support real classroom allow-list workflows:
+The extension records browser requests during a session you start. In Settings, choose all network requests or top-level page loads only. The extension sends AI an ordered list of recorded URLs with query strings and fragments removed. It uses top-level requests to generate the choices for Site and Dependencies in both modes.
 
 - `Site`
-- `Content Dependencies`
-- `Multimedia Dependencies`
-- `Social Media Dependencies`
+- `Dependencies`
 
-The results also include collapsed analysis rationale with matched request counts and notes about the kinds of content loaded from each domain.
+The results also include collapsed analysis rationale with matched request counts and the types of requests recorded for each rule.
 
 ## Why This Exists
 
@@ -40,7 +38,7 @@ This project is intended to reduce the trial-and-error involved in discovering t
 3. Click `Start a New Recording`.
 4. Navigate through the exact lesson flow students need to access.
 5. Click `Stop Recording and Generate Web Links`.
-6. Review the generated `Site` and categorized dependency groups.
+6. Review the generated `Site` and `Dependencies` list.
 7. Copy the results into Securly.
 
 ## Project Structure
@@ -58,3 +56,9 @@ This project is intended to reduce the trial-and-error involved in discovering t
 - Recorded session data is kept only in session storage and is cleared after completion or reset.
 - The extension currently relies on a user-provided Gemini API key stored locally in Chrome extension storage.
 - The current release package is published through GitHub releases for pilot testing and through the Chrome Web Store flow for broader educator testing.
+
+## Third-Party Data
+
+The bundled [Public Suffix List](https://publicsuffix.org/list/) is distributed
+under the [Mozilla Public License 2.0](licenses/MPL-2.0.txt). Its upstream
+version and revision are recorded in [the data file](src/public_suffix_list.dat).

@@ -14,13 +14,8 @@ You should have:
 1. Open the project releases page:
    [https://github.com/txase/securly-weblinks-generator/releases](https://github.com/txase/securly-weblinks-generator/releases)
 2. Open the most recent release.
-3. Under `Assets`, download the `.zip` file for the extension.
-
-At the time of writing, the release archive name looks like:
-
-- `securly-weblinks-generator-v0.0.2.zip`
-
-If you received a `.zip` file, unzip it first. Do not try to load the `.zip` directly into Chrome.
+3. Under `Assets`, download the ZIP whose name starts with
+   `securly-weblinks-generator-v`. Do not download `Source code (zip)`.
 
 ## Step 2: Unzip The Download
 
@@ -59,11 +54,7 @@ You should now see `Securly Web Links Generator` in the Chrome extensions list.
    Example: district dashboard -> sign-in -> learning app -> lesson page or resource.
 3. Click `Stop Recording and Generate Web Links`.
 4. Wait for the extension to finish processing.
-5. Review the generated:
-   - `Site`
-   - `Content Dependencies`
-   - `Multimedia Dependencies`
-   - `Social Media Dependencies`
+5. Review the generated `Site` and `Dependencies` list.
 6. Copy the results into Securly.
 
 ## Updating To A New Version
